@@ -1,0 +1,95 @@
+import Payment from '../models/payment.model.js';
+import Transaction from '../models/transaction.model.js';
+
+export const recordTransaction = async (req, res) => {
+    try {
+        const { paymentId, studentId, amountPaid, paymentMethod, transactionRef, source, gatewayResponse } = req.body;
+
+        // Validate payment
+        const payment = await Payment.findById(paymentId);
+        if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+
+        // Create transaction
+        const transaction = new Transaction({
+            payment: paymentId,
+            student: studentId,
+
+            amountPaid,
+            paymentMethod,
+            transactionRef,
+            source,
+            gatewayResponse,
+
+            status: source == 'cashier' ? 'success' : 'pendingVerification'
+        });
+
+        await transaction.save();
+
+        // Link transaction to payment
+        payment.transactions.push(transaction._id);
+
+        // Update payment status if fully paid
+        if (amountPaid >= payment.totalAmount && transaction.status == 'success') {
+            payment.status = 'completed';
+        }
+        
+        await payment.save();
+        
+        res.status(201).json({ success: true, transaction });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+}
+
+export const verifyTransaction = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+
+        const transaction = await Transaction.findById(transactionId);
+        if (!transaction) return res.status(404).json({ success: false, message: 'Transaction not found' });
+
+        transaction.verifiedByCashier = true;
+        transaction.verifiedAt = new Date();
+        transaction.status = 'success';
+        transaction.staff = req.user.id;
+
+        await transaction.save();
+
+        res.json({ success: true, transaction });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message })
+    }
+}
+
+export const getAllTransactions = async (req, res) => {
+    try {
+        const transactions = await Transaction.find()
+            .populate('payment', 'schoolYear totalAmount status')
+            .populate('student', 'studentNo firstName lastName')
+            .populate('staff', 'fullName role');
+        
+        res.json({ success: true, transactions });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+}
+
+export const getTransactionById = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+
+        const transaction = await Transaction.findById(transactionId)
+            .populate('payment', 'schoolYear totalAmount status')
+            .populate('student', 'studentNo firstName lastName')
+            .populate('staff', 'fullName role');
+        if (!transaction) return res.status(404).json({ success: false, message: 'Transaction not found' });
+
+        res.json({ success: true, transaction })        
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+}

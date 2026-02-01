@@ -1,0 +1,143 @@
+import mongoose from 'mongoose';
+
+const paymentSchema = new mongoose.Schema({
+    student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+    tuitionFee: { type: Number, required: true },
+    discountApplied: {
+        type: String,
+        enum: [ 'zero', 'twentyFive', 'fifty', 'seventyFive', 'oneHundred' ],
+        default: 'zero',
+    },
+    miscFees: {
+        computer: { type: Number, default: 0 },
+        internet: { type: Number, default: 0 },
+        airConditioning: { type: Number, default: 0 },
+        developmentFee: { type: Number, default: 0 },
+        registration: { type: Number, default: 0 },
+        library: { type: Number, default: 0 },
+        scienceLab: { type: Number, default: 0 },
+        sportsDevelopment: { type: Number, default: 0 },
+        insurance: { type: Number, default: 0 },
+        medical: { type: Number, default: 0 },
+        instructionalMaterials: { type: Number, default: 0 },
+        schoolPublication: { type: Number, default: 0 },
+        guidanceAndTesting: { type: Number, default: 0 },
+        capstoneProject: { type: Number, default: 0 },
+    },
+    totalAmount: { type: Number, required: true },
+    dueDate: { type: Date, required: true },
+    status: { type: String, enum: [ "pending", "completed", "failed", "overdue" ], default: 'pending' },
+    transactionId: { type: String, unique: true },
+    paymentMethod: { type: String, enum: [ 'online', 'cash' ], default: 'qrPh' },
+    cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'Cashier' },
+
+    schoolYear: { type: String, required: true },
+    semester: {
+        type: String,
+        enum: [ 'firstSemester', 'secondSemester', 'summer' ],
+        required: true,
+    },
+    period: {
+        type: String,
+        enum: [ 'prelim', 'midterm', 'final' ],
+        required: true,
+    }
+}, { timestamps: true });
+
+
+// Pre-save hook (new documents)
+paymentSchema.pre('save', function(next) {
+    const miscTotal = Object.values(this.miscFees).reduce((sum, fee) => sum + fee, 0);
+
+    let discount = 0;
+    switch (this.discountApplied) {
+        case 'twentyFive': discount = 0.25; break;
+        case 'fifty': discount = 0.50; break;
+        case 'seventyFive': discount = 0.75; break;
+        case 'oneHundred': discount = 1.00; break;
+    }
+
+    // Apply discount only to tuitionFee
+    const discountedTuition = this.tuitionFee * (1 - discount);
+
+    this.totalAmount = discountedTuition + miscTotal;
+    next();
+});
+
+// Pre-update hook (findOneAndUpdate)
+paymentSchema.pre('findOneAndUpdate', async function(next) {
+    const update = this.getUpdate();
+
+    if (update.tuitionFee !== undefined || update.miscFees !== undefined || update.discountApplied !== undefined) {
+        const docToUpdate = await this.model.findOne(this.getQuery());
+        
+        const tuitionFee = update.tuitionFee ?? docToUpdate.tuitionFee;
+        const miscFees = update.miscFees ?? docToUpdate.miscFees;
+        const discountApplied = update.discountApplied ?? docToUpdate.discountApplied;
+
+        const miscTotal = Object.values(miscFees).reduce((sum, fee) => sum + fee, 0);
+
+        let discount = 0;
+        switch(discountApplied) {
+            case 'twentyFive': discount = 0.25; break;
+            case 'fifty': discount = 0.50; break;
+            case 'seventyFive': discount = 0.75; break;
+            case 'oneHundred': discount = 1.00; break;
+        }
+
+        const discountedTuition = tuitionFee * (1 - discount);
+
+        update.totalAmount = discountedTuition + miscTotal;
+        this.setUpdate(update);
+    }
+    next();
+});
+
+// Static helper: generate 3 period payments per student
+paymentSchema.statics.generatePeriodPayments = async function({ studentId, enrollmentId, tuitionFee, discountApplied, miscFees, schoolYear, semester, dueDates }) {
+    const miscTotal = Object.values(miscFees).reduce((sum, fee) => sum + fee, 0);
+
+    let discount = 0;
+    switch (discountApplied) {
+        case 'twentyFive': discount = 0.25; break;
+        case 'fifty': discount = 0.50; break;
+        case 'seventyFive': discount = 0.75; break;
+        case 'oneHundred': discount = 1.00; break;
+    }
+
+    const discountedTuition = tuitionFee * (1 - discount);
+    const semesterTotal = discountedTuition + miscTotal;
+
+    const prelimAmount = Math.round(semesterTotal * 0.33);
+    const midtermAmount = Math.round(semesterTotal * 0.33);
+    const finalAmount = semesterTotal - (prelimAmount + midtermAmount); // ensures exact 34%
+
+    const periods = [
+        { period: 'prelim', amount: prelimAmount, dueDate: dueDates.prelim },
+        { period: 'midterm', amount: midtermAmount, dueDate: dueDates.midterm },
+        { period: 'final', amount: finalAmount, dueDate: dueDates.final },
+    ];
+
+    const Payment = this;
+    const createdPayments = await Promise.all(periods.map(p => 
+        Payment.create({
+            enrollment: enrollmentId,
+            student: studentId,
+            tuitionFee,
+            discountApplied,
+            miscFees,
+            totalAmount: p.amount,
+            dueDate: p.dueDate,
+            schoolYear,
+            semester,
+            period: p.period
+        })
+    ));
+
+    return createdPayments;
+}
+
+
+const Payment = mongoose.model('Payment', paymentSchema);
+
+export default Payment;
