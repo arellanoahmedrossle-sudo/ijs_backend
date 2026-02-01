@@ -25,7 +25,8 @@ app.use(cors({
     origin: [
         'http://localhost:5173', 
         'http://localhost:5174',
-        'https://ijs-phi.vercel.app'
+        'https://ijs-phi.vercel.app',
+        'https://ijsadmin.vercel.app'
     ],
     credentials: true,
 }))
