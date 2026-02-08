@@ -2,10 +2,13 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import Student from '../../models/student.model.js';
 import dotenv from 'dotenv';
+import nodemailer from 'nodemailer';
+
+
 
 dotenv.config();
 
-const handleRegister = async (req, res) => {
+export const handleRegister = async (req, res) => {
     try {
         const { 
                 studentNo, 
@@ -57,7 +60,7 @@ const handleRegister = async (req, res) => {
 };
 
 
-const handleLogin = async (req, res) => {
+export const handleLogin = async (req, res) => {
     try {
         const { identifier, password } = req.body;
 
@@ -67,7 +70,7 @@ const handleLogin = async (req, res) => {
         }
         if (!student) return res.status(400).json({ success: false, message: 'Student not found' });
 
-        const isMatch = bcrypt.compare(password, student.password);
+        const isMatch = await bcrypt.compare(password, student.password);
         if (!isMatch) return res.status(400).json({ success: false, message: 'Invalid credentials' });
 
         // Generate JWT
@@ -76,14 +79,35 @@ const handleLogin = async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: '1h' }
         );
+        
+        const { password: _, ...studentData } = student.toObject();
 
-        res.json({ success: true, message: 'Login successful', token });
+        res.json({ success: true, message: 'Login successful', token, student: studentData });
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: 'Internal server error' });
+        res.status(500).json({ success: false, message: err.message || 'Internal server error' });
     }
 };
 
+export const handleChangePassword = async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+        const studentId = req.user.id;
 
-export { handleRegister, handleLogin };
+        const student = await Student.findById(studentId);
+        if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+
+        const isMatch = await bcrypt.compare(oldPassword, student.password);
+        if (!isMatch) return res.status(400).json({ success: false, message: 'Old password incorrect' });
+
+        student.password = await bcrypt.hash(newPassword, 10);
+        await student.save();
+        
+
+        res.json({ success: true, Message: 'Password updated successfully!' })
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message || 'Internal server error'});
+    }
+}
