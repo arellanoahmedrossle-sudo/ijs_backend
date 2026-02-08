@@ -125,8 +125,8 @@ export const getStudentPayments = async (req, res) => {
         const studentId = req.user.id;
 
         const payments = await Payment.find({ student: studentId })
-            .populate('enrollment', 'schoolYear gradeLevel section program status')
-            .populate('transactions')
+            .populate('enrollment', 'schoolYear gradeLevel section program status semester')
+            .populate('transactions', 'amountPaid status transactionDate paymentMethod transactionRef')
             .lean();
         
         res.json({ success: true, payments });
@@ -141,8 +141,8 @@ export const getStudentPaymentsById = async (req, res) => {
         const { studentId } = req.params;
 
         const payments = await Payment.find({ student: studentId })
-            .populate('enrollment', 'schoolYear gradeLevel section program status')
-            .populate('transactions')
+            .populate('enrollment', 'schoolYear gradeLevel section program status semester')
+            .populate('transactions', 'amountPaid status transactionDate')
             .lean();
 
         res.json({ success: true, payments });
@@ -151,3 +151,25 @@ export const getStudentPaymentsById = async (req, res) => {
         res.status(500).json({ success: false, message: err.message })
     }
 }
+
+export const getPaymentsByEnrollmentId = async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+
+    const payments = await Payment.find({ enrollment: enrollmentId })
+      .populate('student', 'studentNo firstName lastName email')
+      .populate('enrollment', 'schoolYear gradeLevel section program status semester')
+      .populate('staff', 'fullName role')
+      .populate('transactions')
+      .lean();
+
+    if (!payments || payments.length === 0) {
+      return res.status(404).json({ success: false, message: 'No payments found for this enrollment' });
+    }
+
+    res.json({ success: true, payments });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
