@@ -7,7 +7,10 @@ import {
     getTransactionById,
     checkTransactionStatus,
     getTransactionSummary,
-    getRecentTransactions
+    getRecentTransactions,
+    studentPayOnline,
+    studentCheckTransactionStatus,
+    getTransactionQr
  } from "../controllers/transaction.controller.js";
 
 
@@ -23,5 +26,10 @@ import {
 
  router.get('/', authMiddleware(['admin', 'cashier', 'student']), getAllTransactions);
  router.get('/id/:transactionId', authMiddleware(['admin', 'cashier', 'student']), getTransactionById);
+
+ router.post('/online', authMiddleware(['student']), studentPayOnline);
+ router.get('/:transactionId/student-status', authMiddleware(['student']), studentCheckTransactionStatus);
+ router.get('/:transactionId/qr', authMiddleware(['student']), getTransactionQr);
+
 
  export default router;
