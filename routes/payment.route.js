@@ -7,7 +7,8 @@ import {
     updatePayment,
     deletePayment,
     getStudentPayments,
-    getStudentPaymentsById
+    getStudentPaymentsById,
+    getPaymentsByEnrollmentId
 } from '../controllers/payment.controller.js';
 
 
@@ -24,5 +25,6 @@ router.get('/student/:studentId', authMiddleware(['admin', 'cashier']), getStude
 router.get('/:paymentId', authMiddleware(['admin', 'cashier']), getPaymentById);
 router.patch('/:paymentId', authMiddleware(['admin']), updatePayment);
 router.delete('/:paymentId', authMiddleware(['admin']), deletePayment);
+router.get('/enrollment/:enrollmentId', authMiddleware(['admin', 'cashier', 'student']), getPaymentsByEnrollmentId);
 
 export default router;
