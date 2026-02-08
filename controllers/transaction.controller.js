@@ -212,18 +212,30 @@ export const getAllTransactions = async (req, res) => {
 export const getTransactionById = async (req, res) => {
   try {
     const { transactionId } = req.params;
+
     const transaction = await Transaction.findById(transactionId)
       .populate("student", "studentNo firstName lastName")
-      .populate("payment", "status totalAmount tuitionFee miscFees");
+      .populate({
+        path: "payment",
+        select: "status totalAmount tuitionFee discountApplied miscFees schoolYear",
+        populate: {
+          path: "enrollment",
+          select: "semester schoolYear gradeLevel section program"
+        }
+      })
+      .populate("staff", "fullName role");
 
-    if (!transaction) return res.status(404).json({ success: false, message: "Transaction not found" });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
 
     res.json({ success: true, transaction });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
+    console.error("Error fetching transaction:", err);
+    res.status(500).json({ success: false, message: "Server error: " + err.message });
   }
 };
+
 
 
 // ✅ Check transaction status without failing if not yet successful
@@ -326,3 +338,212 @@ export const getRecentTransactions = async (req, res) => {
   }
 };
 
+
+
+// Student initiates online payment (QRPh)
+export const studentPayOnline = async (req, res) => {
+  try {
+    const { paymentId, amountPaid } = req.body;
+    const studentId = req.user.id; // ✅ from JWT token
+
+    const payment = await Payment.findById(paymentId);
+    const student = await Student.findById(studentId);
+    if (!payment || !student) {
+      return res.status(404).json({ success: false, message: "Payment or student not found" });
+    }
+
+    // Temporary transactionRef (will be replaced by PayMongo intent ID)
+    const transactionRef = `TXN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    const transaction = new Transaction({
+      payment: paymentId,
+      student: studentId,
+      amountPaid,
+      paymentMethod: "online",
+      source: "qrph",
+      transactionRef,
+      status: "pendingVerification",
+    });
+
+    await transaction.save();
+
+    // Attach transaction to payment
+    payment.transactions.push(transaction._id);
+    await payment.save();
+
+    // Step 1: Create Payment Intent
+    const intentRes = await axios.post(
+      "https://api.paymongo.com/v1/payment_intents",
+      {
+        data: {
+          attributes: {
+            amount: amountPaid * 100,
+            currency: "PHP",
+            payment_method_allowed: ["qrph"],
+            description: `Payment for ${student.firstName} ${student.lastName}`,
+            statement_descriptor: "School Tuition",
+            metadata: {
+              studentId: student._id.toString(),
+              paymentId: payment._id.toString(),
+              transactionId: transaction._id.toString(),
+            },
+          },
+        },
+      },
+      { headers: authHeader }
+    );
+
+    const paymentIntent = intentRes.data.data;
+    const clientKey = paymentIntent.attributes.client_key;
+
+    // Step 2: Create QRPh Payment Method
+    const pmRes = await axios.post(
+      "https://api.paymongo.com/v1/payment_methods",
+      {
+        data: {
+          attributes: {
+            type: "qrph",
+            billing: {
+              name: `${student.firstName} ${student.lastName}`,
+              email: student.email,
+              phone: student.phone || "",
+            },
+            metadata: {
+              studentId: student._id.toString(),
+              paymentId: payment._id.toString(),
+              transactionId: transaction._id.toString(),
+            },
+          },
+        },
+      },
+      { headers: authHeader }
+    );
+
+    const paymentMethod = pmRes.data.data;
+
+    // Step 3: Attach Payment Method to Payment Intent
+    const attachRes = await axios.post(
+      `https://api.paymongo.com/v1/payment_intents/${paymentIntent.id}/attach`,
+      {
+        data: {
+          attributes: {
+            payment_method: paymentMethod.id,
+            client_key: clientKey,
+          },
+        },
+      },
+      { headers: authHeader }
+    );
+
+    const nextAction = attachRes.data.data.attributes.next_action;
+
+    // ✅ Update transaction with PayMongo intent ID
+    transaction.transactionRef = paymentIntent.id;
+    transaction.gatewayResponse = attachRes.data;
+    await transaction.save();
+
+    const qrImage = nextAction?.code?.image_url;
+    const rawCode = nextAction?.code?.raw;
+
+    res.status(201).json({
+      success: true,
+      transaction,
+      qrImage,
+      rawCode,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+
+// Student checks their own transaction status
+export const studentCheckTransactionStatus = async (req, res) => {
+  try {
+    console.log("Checking transaction status for student...");
+    const { transactionId } = req.params;
+    const studentId = req.user.id; // ✅ from JWT token
+
+    const transaction = await Transaction.findById(transactionId);
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    // ✅ Ensure student owns this transaction
+    if (transaction.student.toString() !== studentId) {
+      return res.status(403).json({ success: false, message: "Not authorized to view this transaction" });
+    }
+
+    // Call PayMongo API to check status of the attached Payment Intent
+    const paymongoRes = await axios.get(
+      `https://api.paymongo.com/v1/payment_intents/${transaction.transactionRef}`,
+      { headers: authHeader }
+    );
+
+    const status = paymongoRes.data?.data?.attributes?.status;
+    let completed = false;
+
+    // ✅ Update only if succeeded
+    if (status === "succeeded") {
+      transaction.status = "success";
+      transaction.gatewayResponse = paymongoRes.data;
+      transaction.verifiedAt = new Date();
+      await transaction.save();
+
+      completed = await updatePaymentStatus(transaction.payment);
+    }
+    console.log(`Transaction ${transactionId} status: ${status}, payment completed: ${completed}`);
+    // ✅ Return current status (but don’t fail if not succeeded yet)
+    return res.json({
+      success: true,
+      transactionId: transaction._id,
+      transactionRef: transaction.transactionRef,
+      currentStatus: status,
+      appStatus: transaction.status, // "success" or still "pendingVerification"
+      paymentCompleted: completed
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+
+// Student fetches existing QR details for an online transaction
+export const getTransactionQr = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const studentId = req.user.id;
+
+    const transaction = await Transaction.findById(transactionId);
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    // ✅ Ensure student owns this transaction
+    if (transaction.student.toString() !== studentId) {
+      return res.status(403).json({ success: false, message: "Not authorized" });
+    }
+
+    const nextAction = transaction.gatewayResponse?.data?.attributes?.next_action;
+    const qrImage = nextAction?.code?.image_url;
+    const rawCode = nextAction?.code?.raw;
+
+    return res.json({
+      success: true,
+      transactionId: transaction._id,
+      transactionRef: transaction.transactionRef,
+      qrImage,
+      rawCode,
+      status: transaction.status,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
