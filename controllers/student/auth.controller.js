@@ -2,8 +2,6 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import Student from '../../models/student.model.js';
 import dotenv from 'dotenv';
-import nodemailer from 'nodemailer';
-
 
 
 dotenv.config();
